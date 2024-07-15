@@ -1,0 +1,452 @@
+﻿using System;
+using System.Data;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Windows.Forms;
+using EasyModbus;
+using System.Collections.Generic;
+using System.Threading;
+
+namespace Uji_coba_modbus_multiclient
+{
+    public partial class Form1 : Form
+    {
+        private ModbusClient modbusClient;
+        private ModbusClient modbusClient2;
+        private int rowCount = 0;
+        private bool isOn = false;
+        private string proses;
+        private const int MaxRows = 15;
+        private const int MaxFiles = 5;
+        private SensorDataProcessor _processor;
+        public Form1()
+        {
+            InitializeComponent();
+            InitializeModbusClients();
+            InitializeMainTimer();
+            _processor = new SensorDataProcessor(5);
+        }
+        private void InitializeModbusClients()
+        {
+            try
+            {
+                modbusClient = new ModbusClient("COM8");
+                modbusClient.UnitIdentifier = 1;        //pressure sensor
+                modbusClient.UnitIdentifier = 3;        //relay
+                modbusClient.Baudrate = 9600;
+                modbusClient.Parity = System.IO.Ports.Parity.None;
+                modbusClient.StopBits = System.IO.Ports.StopBits.One;
+
+                modbusClient2 = new ModbusClient("COM7");  //ARDUINO
+                modbusClient2.UnitIdentifier = 2;        //arduino-turbidity
+                modbusClient2.Baudrate = 9600;
+                modbusClient2.Parity = System.IO.Ports.Parity.None;
+                modbusClient2.StopBits = System.IO.Ports.StopBits.One;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}", "Connection Error", 
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            
+            buttonFILTERING.Enabled = false; buttonBACKWASH.Enabled = false;
+            buttonRINSE.Enabled = false; buttonPOMPA.Enabled = false;
+        }
+        private void InitializeMainTimer()
+        {
+            Maintimer = new System.Windows.Forms.Timer();
+            Maintimer.Interval = 1000; // interval dalam milidetik (1 detik)
+            Maintimer.Tick += Maintimer_Tick;
+            Maintimer.Start();
+        }
+        private void Write(int channel, bool cond)    //pengaturan relay
+        {
+            try
+            {
+                modbusClient.UnitIdentifier = 3;
+                modbusClient.WriteSingleCoil(channel - 1, cond);
+                if (cond)
+                {
+                    Console.WriteLine($"Channel {channel} Nyala");
+                }
+                else
+                {
+                    Console.WriteLine($"Channel {channel} Mati");
+                }
+            }
+            catch
+            {
+                Console.WriteLine($"Channel {channel} Mati");
+            }
+        }
+        private void Maintimer_Tick(object sender, EventArgs e)   //turbidity dan keduapressure
+        {
+            try
+            {
+                if (buttonconnect.Text == "EXIT")
+                {
+                    modbusClient2.UnitIdentifier = 2;              
+                    int[] registersArduino = modbusClient2.ReadInputRegisters(0, 3);
+                    int ADCValue = registersArduino[0];
+                    textBoxAnalog.Text = ADCValue.ToString();
+                    double VoltageValue = registersArduino[1] * 1.00;
+                    textBoxV.Text = VoltageValue.ToString();
+                    int NTUValue = registersArduino[2]/100;
+                    Console.WriteLine(registersArduino[2]);
+                    textBoxTurbidity.Text = NTUValue.ToString();
+
+                    modbusClient.UnitIdentifier = 1;     //pressure
+                    int[] registersPressure = modbusClient.ReadHoldingRegisters(4, 1);
+                    int BarValue = registersPressure[0];          //satuan Kbar
+                    textBoxSensorT.Text = BarValue.ToString();
+                    double RealTValue = BarValue / 1000.000;             //Kbar to bar
+                    textBoxTekanan.Text = RealTValue.ToString();
+                    double BedaTekanan = 0.9 - RealTValue;                 //berkurang 1 bar
+                    textBoxDeltaP.Text = BedaTekanan.ToString();           //beda tekanan
+
+                    double currentValueT = RealTValue;                      //tekanan
+                    double averageValueT = _processor.rerata(currentValueT);
+                    double currentValueP = NTUValue;              //turbidity
+                    double averageValueP = _processor.rerata(currentValueP);
+
+                    string timeStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    string data = $"{timeStamp},{currentValueT},{averageValueP}, {proses}";
+                    SaveData(data);
+                    rowCount++;
+                    if (radioButton2.Checked)
+                    {
+                        Console.WriteLine(currentValueT.ToString());
+                        if (currentValueT > 0.8)            //BATASNYA 0.8 dr 0.9
+                        {
+                            BackwashON(sender, e);
+                            Console.WriteLine("BACKWASHTIME");
+                            if(currentValueP < 25)
+                            {
+                                RinseON(sender, e);
+                                Console.WriteLine("RINSETIME");
+                            }
+                        }
+                        else
+                        {
+                            FilteringON(sender, e);
+                            Console.WriteLine("Filtering");
+                        }
+                    }
+                    else if(radioButton1.Checked)
+                    {
+                        Console.WriteLine($"Mesin dalam Manual");
+                        panelmanual.Visible = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error: " + ex.Message);
+            }
+        }
+        public void SaveData(string data)
+        {
+            string folderPath = @"C:\Users\USER\Documents\0 KULIAHH\MATKUL\Sem 8\skripsi\Programming";
+            if (!Directory.Exists(folderPath))
+            {
+                Directory.CreateDirectory(folderPath);
+            }
+            var files = Directory.GetFiles(folderPath, "*.csv").OrderBy(f => f).ToList();
+            string currentFilePath;
+            if (files.Count == 0)
+            {
+                currentFilePath = Path.Combine(folderPath, "data_1.csv");
+                using (StreamWriter writer = new StreamWriter(currentFilePath, true))
+                {
+                    writer.WriteLine("Waktu, Bar Tekanan, NTU Arduino, Mode");
+                }
+            }
+            else
+            {
+                currentFilePath = files.Last();
+                if (File.ReadAllLines(currentFilePath).Length >= MaxRows + 1) // +1 header
+                {
+                    CalculateAverages(currentFilePath);
+                    int newFileNumber = files.Count + 1;
+                    currentFilePath = Path.Combine(folderPath, $"data_{newFileNumber}.csv");
+                    if (files.Count >= MaxFiles)
+                    {
+                        File.Delete(files.First());
+                    }
+                    using (StreamWriter writer = new StreamWriter(currentFilePath, true))
+                    {
+                        writer.WriteLine("registersArduino, registersPressure");
+                    }
+                }
+            }
+            using (StreamWriter writer = new StreamWriter(currentFilePath, true))
+            {
+                writer.WriteLine(data);
+            }
+        }
+        public void CalculateAverages(string filePath)
+        {
+            var lines = File.ReadAllLines(filePath).Skip(1); // Skip header
+            var registersArduinoValues = lines.Select(line => int.Parse(line.Split(',')[1])).ToList();
+            var registersPressureValues = lines.Select(line => int.Parse(line.Split(',')[2])).ToList();
+
+            double averageSensor1 = registersArduinoValues.Average();
+            double averageSensor2 = registersPressureValues.Average();
+        }
+        private void button1_Click(object sender, EventArgs e)   //button connect
+        {
+            isOn = !isOn; // toggle the state
+            if (isOn)
+            {
+                if (buttonconnect.Text == "Connect")
+                {
+                    modbusClient.Connect();
+                    modbusClient2.Connect();
+                    Maintimer.Start();
+                    panelstatus.Visible = true;
+                    lblstatans.Text = "Connected";
+                    panelmanual.Visible = true;
+                    buttonconnect.Text = "EXIT";
+                    buttonconnect.BackColor = Color.Red;
+                    ResetValveStates();
+                }
+            }
+            else
+            {
+                modbusClient.Disconnect();
+                modbusClient2.Disconnect();
+                ResetValveStates();
+                PompaOFF();
+                buttonconnect.BackColor = Color.Yellow;
+                Application.Exit();
+            }
+        }
+        public void ResetValveStates()
+        {
+            Write(1, false); textBoxOff1.BackColor = Color.Red; textBoxOff1.Text = "OFF";
+            Write(2, false); textBoxOff3.BackColor = Color.Red; textBoxOff3.Text = "OFF";
+            Write(3, false); textBoxOff2.BackColor = Color.Red; textBoxOff2.Text = "OFF";
+            Write(4, false); textBoxOff4.BackColor = Color.Red; textBoxOff4.Text = "OFF";
+            Write(5, false); textBoxOff6.BackColor = Color.Red; textBoxOff6.Text = "OFF";
+            Write(6, false); textBoxOff5.BackColor = Color.Red; textBoxOff5.Text = "OFF";
+        }
+        private void CekKondisiValve()
+        {
+            if (textBoxStatus.Text == "TANGKI BERSIH")
+            {
+                Write(1, true); textBoxOff1.BackColor = Color.Green; textBoxOff1.Text = "ON";
+                Write(4, true); textBoxOff4.BackColor = Color.Green; textBoxOff4.Text = "ON";
+                Write(5, true); textBoxOff5.BackColor = Color.Green; textBoxOff5.Text = "ON";
+                Write(2, false); textBoxOff3.BackColor = Color.Red; textBoxOff3.Text = "OFF";
+                Write(3, false); textBoxOff2.BackColor = Color.Red; textBoxOff2.Text = "OFF";
+                Write(6, false); textBoxOff6.BackColor = Color.Red; textBoxOff6.Text = "OFF";
+            }
+            else if (textBoxStatus.Text == "TANGKI KOTOR")
+            {
+                Write(2, true); textBoxOff2.BackColor = Color.Green; textBoxOff2.Text = "ON";
+                Write(3, true); textBoxOff3.BackColor = Color.Green; textBoxOff3.Text = "ON";
+                Write(6, true); textBoxOff6.BackColor = Color.Green; textBoxOff6.Text = "ON";
+                Write(1, false); textBoxOff1.BackColor = Color.Red; textBoxOff1.Text = "OFF";
+                Write(4, false); textBoxOff4.BackColor = Color.Red; textBoxOff4.Text = "OFF";
+                Write(5, false); textBoxOff5.BackColor = Color.Red; textBoxOff5.Text = "OFF";            
+            }
+            else if (textBoxStatus.Text == "SEDANG MEMBILAS")
+            {
+                Write(1, true); textBoxOff1.BackColor = Color.Green; textBoxOff1.Text = "ON";
+                Write(4, true); textBoxOff4.BackColor = Color.Green; textBoxOff4.Text = "ON";
+                Write(6, true); textBoxOff6.BackColor = Color.Green; textBoxOff6.Text = "ON";
+                Write(2, false); textBoxOff3.BackColor = Color.Red; textBoxOff3.Text = "OFF";
+                Write(3, false); textBoxOff2.BackColor = Color.Red; textBoxOff2.Text = "OFF";
+                Write(5, false); textBoxOff5.BackColor = Color.Red; textBoxOff5.Text = "OFF";
+            }
+        }
+        private void PompaON()
+        {
+            Write(7, true); buttonPOMPA.BackColor = Color.Green;
+        }
+        private void PompaOFF()
+        {
+            Write(7, false); buttonPOMPA.BackColor = Color.Red;        
+        }
+        private void FilteringON(object sender, EventArgs e)
+        {
+            textBoxStatus.Text = "TANGKI BERSIH";
+            proses = "Filtering";
+            if (proses == "Filtering")
+            {
+                textBoxStatus.Text = "TANGKI BERSIH";
+                CekKondisiValve();
+            }
+        }
+        private void RinseON(object sender, EventArgs e)
+        {
+            proses = "Rinse";
+            if (proses == "Rinse")
+            {
+                textBoxStatus.Text = "SEDANG MEMBILAS";
+                CekKondisiValve();
+                Thread.Sleep(5000); // rinse 5 detik
+            }
+        }
+        private void BackwashON(object sender, EventArgs e)
+        {
+            proses = "Backwash";
+            if (proses == "Backwash")
+            {
+                textBoxStatus.Text = "TANGKI KOTOR";
+                CekKondisiValve();
+            }
+            Thread.Sleep(10000); //  backwash 10 detik
+        }
+        private void button1_Click_1(object sender, EventArgs e)
+        {
+            string kondisi = "FILTERING";
+            if (kondisi == "FILTERING")
+            {
+                ResetValveStates();
+                textBoxStatus.Text = "TANGKI BERSIH";
+                CekKondisiValve();
+            }
+        }
+        private void button2_Click(object sender, EventArgs e)
+        {
+            string kondisi = "BACKWASH";
+            if (kondisi == "BACKWASH")
+            {
+                ResetValveStates();
+                textBoxStatus.Text = "TANGKI KOTOR";
+                CekKondisiValve();
+            }
+        }
+        private void button3_Click(object sender, EventArgs e)
+        {
+            string kondisi = "RINSE";
+            if (kondisi == "RINSE")
+            {
+                //145 nyala , 235 mati
+                ResetValveStates();
+                textBoxStatus.Text = "SEDANG MEMBILAS";
+                CekKondisiValve();
+            }
+        }
+        private void button4_Click(object sender, EventArgs e)
+        {
+            string kondisi = "OFF";
+            if (kondisi == "OFF")
+            {
+                // 1234567 mati
+                ResetValveStates();
+                Write(7, false);
+                textBoxStatus.Text = "TIDAK BERFUNGSI";
+            }
+        }
+        private void button5_Click(object sender, EventArgs e)
+        {
+            isOn = !isOn; // Toggle the state
+            if (isOn)
+            {
+                string kondisi = "POMPA MENYALA";
+                if (kondisi == "POMPA MENYALA")
+                {
+                    Write(7, true);
+                    textBoxStatus.Text = "POMPA ON ";
+                    buttonPOMPA.BackColor = Color.Green;
+                }
+            }
+            else
+            {
+                buttonPOMPA.BackColor = Color.Red;
+                Write(7, false);
+            }
+        }
+        private void radioButton1_CheckedChanged(object sender, EventArgs e)
+        {
+            PompaOFF();
+            buttonFILTERING.Enabled = true; buttonBACKWASH.Enabled = true;
+            buttonRINSE.Enabled = true; buttonPOMPA.Enabled = true;
+        }
+        private void radioButton2_CheckedChanged(object sender, EventArgs e)
+        {
+            PompaON();
+            panelmanual.Visible = true;
+            buttonFILTERING.Enabled = false; buttonBACKWASH.Enabled = false;
+            buttonRINSE.Enabled = false; buttonPOMPA.Enabled = false;            
+        }
+        private void textBoxTekanan_TextChanged_1(object sender, EventArgs e)
+        {
+        }
+        private void panel1_Paint(object sender, PaintEventArgs e)
+        {
+        }
+        private void textBox1_TextChanged(object sender, EventArgs e)
+        {
+        }
+        private void label9_Click(object sender, EventArgs e)
+        {
+        }
+        private void dateTimePicker1_ValueChanged(object sender, EventArgs e)
+        {
+        }
+        private void textBoxOff1_TextChanged(object sender, EventArgs e)
+        {
+        }
+        private void JamBerapa()
+        {
+            labelJam.Text = DateTime.Now.ToString("HH:mm:ss");
+        }
+        private void timerclock_Tick(object sender, EventArgs e)
+        {
+            JamBerapa();
+        }
+        private void textBoxTurbidity_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+        private void textBox2_TextChanged(object sender, EventArgs e)
+        {
+        }
+        private void textBoxSensorT_TextChanged(object sender, EventArgs e)
+        {
+        }
+        private void pictureBox1_Click(object sender, EventArgs e)
+        {
+        }
+    }
+    public class SensorDataProcessor
+    {
+        private double[] data;
+        private int dataSize;
+        private int currentIndex = 0;
+        private int count = 0;
+        public SensorDataProcessor(int size)
+        {
+            dataSize = size;
+            data = new double[dataSize];
+        }
+        public double rerata(double newValue)
+        {
+            if (count < dataSize)
+            {
+                data[currentIndex] = newValue;
+                currentIndex = (currentIndex + 1) % dataSize;
+                count++;
+                return newValue;
+            }
+            else
+            {
+                data[currentIndex] = newValue;
+                currentIndex = (currentIndex + 1) % dataSize;
+                double sum = 0;
+                for (int i = 0; i < dataSize; i++)
+                {
+                    sum += data[i];
+                }
+                return sum / dataSize;
+            }
+        }
+    }
+}
