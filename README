@@ -6,3 +6,4 @@ Program otomatis berjalan dengan proses defaultnya filtering dan berubah menjadi
 Backwash berhenti ketika kejernihan sudah kurang dari 25 NTU yang artinya air pada tangki sudah bersih, rinse berjalan 5 detik dan akan berganti proses filtering.
 Sensor kejernihan yang terkoneksi dengan arduino dikomunikasikan modbus menggunakan library modbusarduino sehingga perlu upload fle 'Source-Code-Arduino-Modbus.ino' ke arduino terlebih dahulu sebelum main code c# dijalankan.
 Untuk menjalankan program, download package 'Uji coba modbus multiclient' dan 'Visual Studio Solution (.sln)' kemudian file 'Visual Studio Solution (.sln)' direname menjadi 'Uji coba modbus client.sln'
+Video percobaan mode manual dan mode otomatis terlampir pada tautan https://drive.google.com/drive/folders/1z1CQrRqD1UniUzC87GbJk5C4Pt_GlN8x?usp=sharing 
